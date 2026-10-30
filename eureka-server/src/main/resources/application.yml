@@ -1,0 +1,24 @@
+server:
+  port: ${SERVER_PORT:8761}
+
+spring:
+  application:
+    name: eureka-server
+
+eureka:
+  instance:
+    hostname: ${EUREKA_HOSTNAME:localhost}
+  client:
+    # сам реестр ни у кого не регистрируется
+    register-with-eureka: false
+    fetch-registry: false
+  server:
+    # для локального стенда отключаем режим самосохранения, чтобы упавшие экземпляры быстрее пропадали
+    enable-self-preservation: false
+    eviction-interval-timer-in-ms: 10000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

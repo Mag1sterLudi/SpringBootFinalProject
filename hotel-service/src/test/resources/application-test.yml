@@ -1,0 +1,11 @@
+eureka:
+  client:
+    enabled: false
+
+app:
+  seed:
+    enabled: false
+
+logging:
+  file:
+    name: ""

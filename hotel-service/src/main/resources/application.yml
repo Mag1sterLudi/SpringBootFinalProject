@@ -1,0 +1,57 @@
+server:
+  port: ${SERVER_PORT:8081}
+
+spring:
+  application:
+    name: hotel-service
+  datasource:
+    url: jdbc:h2:mem:hotels;DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=10000
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    open-in-view: false
+
+app:
+  api:
+    description: Отели, номера, блокировка слотов и статистика загруженности
+  seed:
+    enabled: true
+
+security:
+  jwt:
+    secret: ${JWT_SECRET:local-dev-secret-change-me-it-must-be-32-bytes-or-longer}
+    issuer: hotel-booking
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka}
+  instance:
+    prefer-ip-address: true
+    instance-id: ${spring.application.name}:${server.port}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  tracing:
+    sampling:
+      probability: 1.0
+
+springdoc:
+  swagger-ui:
+    operations-sorter: method
+
+logging:
+  pattern:
+    correlation: "[${spring.application.name:},%X{traceId:-},%X{spanId:-}] "
+  file:
+    name: logs/hotel-service.log
+  structured:
+    format:
+      file: ecs
+  level:
+    ru.hotelbooking: INFO

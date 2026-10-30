@@ -1,0 +1,29 @@
+eureka:
+  client:
+    enabled: false
+
+app:
+  seed:
+    enabled: false
+
+booking:
+  hotel-client:
+    read-timeout: 500ms
+  saga-recovery:
+    enabled: false
+
+resilience4j:
+  retry:
+    instances:
+      hotel:
+        wait-duration: 50ms
+
+spring:
+  cloud:
+    loadbalancer:
+      cache:
+        enabled: false
+
+logging:
+  file:
+    name: ""

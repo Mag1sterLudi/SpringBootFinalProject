@@ -1,0 +1,44 @@
+server:
+  port: ${SERVER_PORT:8080}
+
+spring:
+  application:
+    name: api-gateway
+  reactor:
+    context-propagation: auto
+
+security:
+  jwt:
+    secret: ${JWT_SECRET:local-dev-secret-change-me-it-must-be-32-bytes-or-longer}
+    issuer: hotel-booking
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka}
+  instance:
+    prefer-ip-address: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,gateway
+  endpoint:
+    gateway:
+      access: read-only
+  tracing:
+    sampling:
+      probability: 1.0
+
+logging:
+  pattern:
+    correlation: "[${spring.application.name:},%X{traceId:-},%X{spanId:-}] "
+  level:
+    ru.hotelbooking: INFO
+    org.springframework.cloud.gateway: INFO
+  file:
+    name: logs/api-gateway.log
+  structured:
+    format:
+      file: ecs

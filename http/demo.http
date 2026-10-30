@@ -1,0 +1,388 @@
+### Запросы для IntelliJ HTTP Client. Все идут через Gateway.
+### У каждого запроса есть проверка ожидаемого ответа. Зелёный значок - ответ правильный,
+### красный - нет, причина видна во вкладке Tests. Проверки рассчитаны на свежие демо-данные:
+### перед повторным прогоном нужно перезапустить hotel-service и booking-service.
+@gateway = http://localhost:8080
+@checkIn = 2026-12-01
+@checkOut = 2026-12-03
+
+### Вход пользователем
+POST {{gateway}}/api/bookings/user/auth
+Content-Type: application/json
+
+{"username": "ivan", "password": "ivan123"}
+
+> {%
+    client.test("200 и токен с ролью USER", () => {
+        client.assert(response.status === 200, "статус " + response.status);
+        client.assert(response.body.accessToken, "нет accessToken");
+        client.assert(response.body.role === "USER", "роль " + response.body.role);
+    });
+    client.test("traceId в заголовке X-Trace-Id", () => {
+        client.assert(response.headers.valueOf("X-Trace-Id"), "нет заголовка X-Trace-Id");
+    });
+    client.global.set("userToken", response.body.accessToken);
+%}
+
+### Вход администратором
+POST {{gateway}}/api/bookings/user/auth
+Content-Type: application/json
+
+{"username": "admin", "password": "admin123"}
+
+> {%
+    client.test("200 и роль ADMIN", () => {
+        client.assert(response.status === 200, "статус " + response.status);
+        client.assert(response.body.role === "ADMIN", "роль " + response.body.role);
+    });
+    client.global.set("adminToken", response.body.accessToken);
+%}
+
+### Без токена - 401
+GET {{gateway}}/api/hotels
+
+> {%
+    client.test("401 UNAUTHORIZED в общем формате ошибки", () => {
+        client.assert(response.status === 401, "статус " + response.status);
+        client.assert(response.body.code === "UNAUTHORIZED", "code " + response.body.code);
+        client.assert(response.body.traceId, "нет traceId в теле ошибки");
+    });
+%}
+
+### Регистрация нового пользователя
+POST {{gateway}}/api/bookings/user/register
+Content-Type: application/json
+
+{"username": "petr", "password": "petr-password"}
+
+> {%
+    client.test("201 и токен с ролью USER", () => {
+        client.assert(response.status === 201, "статус " + response.status + " (повторный прогон без перезапуска даёт 409)");
+        client.assert(response.body.role === "USER", "роль " + response.body.role);
+    });
+%}
+
+### Повторная регистрация с тем же логином - 409
+POST {{gateway}}/api/bookings/user/register
+Content-Type: application/json
+
+{"username": "petr", "password": "petr-password"}
+
+> {%
+    client.test("409 USERNAME_TAKEN", () => {
+        client.assert(response.status === 409, "статус " + response.status);
+        client.assert(response.body.code === "USERNAME_TAKEN", "code " + response.body.code);
+    });
+%}
+
+### Список отелей в Казани
+GET {{gateway}}/api/hotels?city=Казань
+Authorization: Bearer {{userToken}}
+
+> {%
+    client.test("один отель - Волжский берег", () => {
+        client.assert(response.status === 200, "статус " + response.status);
+        client.assert(response.body.totalElements === 1, "найдено " + response.body.totalElements);
+        client.assert(response.body.content[0].name === "Волжский берег", response.body.content[0].name);
+    });
+%}
+
+### Свободные номера на даты
+GET {{gateway}}/api/rooms?startDate={{checkIn}}&endDate={{checkOut}}&sort=pricePerNight,asc
+Authorization: Bearer {{userToken}}
+
+> {%
+    client.test("200, номера отсортированы по цене, номера на ремонте нет", () => {
+        client.assert(response.status === 200, "статус " + response.status);
+        const prices = response.body.content.map(room => room.pricePerNight);
+        client.assert(prices.every((price, i) => i === 0 || prices[i - 1] <= price), "не по возрастанию: " + prices);
+        client.assert(!response.body.content.some(room => room.id === 5), "номер 5 на ремонте попал в выдачу");
+    });
+%}
+
+### Рекомендации в hotel-service (times_booked по возрастанию)
+GET {{gateway}}/api/rooms/recommend?hotelId=1&startDate={{checkIn}}&endDate={{checkOut}}
+Authorization: Bearer {{userToken}}
+
+> {%
+    client.test("порядок номеров 3, 4, 2, 1", () => {
+        client.assert(response.status === 200, "статус " + response.status);
+        const ids = response.body.map(room => room.id).join(",");
+        client.assert(ids === "3,4,2,1", "порядок " + ids);
+    });
+%}
+
+### Рекомендации через booking-service
+GET {{gateway}}/api/bookings/booking/recommendations?hotelId=1&startDate={{checkIn}}&endDate={{checkOut}}
+Authorization: Bearer {{userToken}}
+
+> {%
+    client.test("тот же порядок 3, 4, 2, 1", () => {
+        client.assert(response.status === 200, "статус " + response.status);
+        const ids = response.body.map(room => room.id).join(",");
+        client.assert(ids === "3,4,2,1", "порядок " + ids);
+    });
+%}
+
+### Бронь с автоподбором
+POST {{gateway}}/api/bookings/booking
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{"hotelId": 1, "startDate": "{{checkIn}}", "endDate": "{{checkOut}}", "autoSelect": true, "requestId": "demo-auto-1"}
+
+> {%
+    client.test("201, CONFIRMED, выбран наименее загруженный номер 3", () => {
+        client.assert(response.status === 201, "статус " + response.status);
+        client.assert(response.body.status === "CONFIRMED", "статус брони " + response.body.status);
+        client.assert(response.body.roomId === 3, "номер " + response.body.roomId);
+        client.assert(response.body.nights === 2, "ночей " + response.body.nights);
+    });
+    client.global.set("bookingId", response.body.id);
+%}
+
+### Та же бронь повторно - 200 и тот же id
+POST {{gateway}}/api/bookings/booking
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{"hotelId": 1, "startDate": "{{checkIn}}", "endDate": "{{checkOut}}", "autoSelect": true, "requestId": "demo-auto-1"}
+
+> {%
+    client.test("200 вместо 201 и та же бронь", () => {
+        client.assert(response.status === 200, "статус " + response.status);
+        client.assert(String(response.body.id) === String(client.global.get("bookingId")), "другой id " + response.body.id);
+    });
+%}
+
+### Номер 3 занят один раз, а не два
+GET {{gateway}}/api/rooms/3
+Authorization: Bearer {{userToken}}
+
+> {%
+    client.test("timesBooked = 1", () => {
+        client.assert(response.body.timesBooked === 1, "timesBooked " + response.body.timesBooked);
+    });
+%}
+
+### Бронь конкретного номера
+POST {{gateway}}/api/bookings/booking
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{"roomId": 8, "startDate": "{{checkIn}}", "endDate": "{{checkOut}}", "autoSelect": false, "requestId": "demo-manual-1"}
+
+> {%
+    client.test("201, CONFIRMED, номер 8", () => {
+        client.assert(response.status === 201, "статус " + response.status);
+        client.assert(response.body.status === "CONFIRMED", "статус брони " + response.body.status);
+        client.assert(response.body.roomId === 8, "номер " + response.body.roomId);
+    });
+%}
+
+### Тот же номер на те же даты другим запросом - 409
+POST {{gateway}}/api/bookings/booking
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{"roomId": 8, "startDate": "{{checkIn}}", "endDate": "{{checkOut}}", "autoSelect": false, "requestId": "demo-manual-2"}
+
+> {%
+    client.test("409 ROOM_NOT_AVAILABLE", () => {
+        client.assert(response.status === 409, "статус " + response.status);
+        client.assert(response.body.code === "ROOM_NOT_AVAILABLE", "code " + response.body.code);
+    });
+%}
+
+### Выезд раньше заезда - 400
+POST {{gateway}}/api/bookings/booking
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{"roomId": 8, "startDate": "2026-12-10", "endDate": "2026-12-05", "autoSelect": false}
+
+> {%
+    client.test("400 VALIDATION_FAILED по полю endDate", () => {
+        client.assert(response.status === 400, "статус " + response.status);
+        client.assert(response.body.code === "VALIDATION_FAILED", "code " + response.body.code);
+        client.assert(response.body.violations[0].field === "endDate", "поле " + response.body.violations[0].field);
+    });
+%}
+
+### История бронирований
+GET {{gateway}}/api/bookings/bookings?page=0&size=2
+Authorization: Bearer {{userToken}}
+
+> {%
+    client.test("200, только свои брони, по 2 на странице", () => {
+        client.assert(response.status === 200, "статус " + response.status);
+        client.assert(response.body.content.length === 2, "на странице " + response.body.content.length);
+        client.assert(response.body.totalPages > 1, "страниц " + response.body.totalPages);
+        const owners = new Set(response.body.content.map(booking => booking.userId));
+        client.assert(owners.size === 1, "брони разных пользователей");
+    });
+%}
+
+### Чужая бронь (принадлежит maria) - 404
+GET {{gateway}}/api/bookings/booking/3
+Authorization: Bearer {{userToken}}
+
+> {%
+    client.test("404 для чужой брони", () => {
+        client.assert(response.status === 404, "статус " + response.status);
+    });
+%}
+
+### Та же бронь для ADMIN - 200
+GET {{gateway}}/api/bookings/booking/3
+Authorization: Bearer {{adminToken}}
+
+> {%
+    client.test("администратор видит любую бронь", () => {
+        client.assert(response.status === 200, "статус " + response.status);
+    });
+%}
+
+### Бронь по id
+GET {{gateway}}/api/bookings/booking/{{bookingId}}
+Authorization: Bearer {{userToken}}
+
+> {%
+    client.test("200 и та же бронь", () => {
+        client.assert(response.status === 200, "статус " + response.status);
+        client.assert(response.body.status === "CONFIRMED", "статус брони " + response.body.status);
+    });
+%}
+
+### Отмена брони
+DELETE {{gateway}}/api/bookings/booking/{{bookingId}}
+Authorization: Bearer {{userToken}}
+
+> {%
+    client.test("200, CANCELLED, причина CANCELLED_BY_USER", () => {
+        client.assert(response.status === 200, "статус " + response.status);
+        client.assert(response.body.status === "CANCELLED", "статус брони " + response.body.status);
+        client.assert(response.body.cancelReason === "CANCELLED_BY_USER", "причина " + response.body.cancelReason);
+    });
+%}
+
+### После отмены номер 3 снова свободен
+GET {{gateway}}/api/rooms/3
+Authorization: Bearer {{userToken}}
+
+> {%
+    client.test("timesBooked = 0", () => {
+        client.assert(response.body.timesBooked === 0, "timesBooked " + response.body.timesBooked);
+    });
+%}
+
+### Внутренний эндпойнт через Gateway недоступен - 404
+POST {{gateway}}/api/rooms/1/confirm-availability
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{}
+
+> {%
+    client.test("404 даже для ADMIN", () => {
+        client.assert(response.status === 404, "статус " + response.status);
+    });
+%}
+
+### USER не может создать отель - 403
+POST {{gateway}}/api/hotels
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{"name": "Тест", "city": "Тест", "address": "Тест", "stars": 3}
+
+> {%
+    client.test("403 FORBIDDEN", () => {
+        client.assert(response.status === 403, "статус " + response.status);
+        client.assert(response.body.code === "FORBIDDEN", "code " + response.body.code);
+    });
+%}
+
+### Добавить отель (ADMIN)
+POST {{gateway}}/api/hotels
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"name": "Байкал", "city": "Иркутск", "address": "ул. Карла Маркса, 1", "stars": 4}
+
+> {%
+    client.test("201", () => {
+        client.assert(response.status === 201, "статус " + response.status + " (повторный прогон без перезапуска даёт 409)");
+    });
+%}
+
+### Добавить номер (ADMIN)
+POST {{gateway}}/api/rooms
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{"hotelId": 1, "number": "106", "type": "DELUXE", "capacity": 2, "pricePerNight": 6900}
+
+> {%
+    client.test("201, номер в эксплуатации, timesBooked = 0", () => {
+        client.assert(response.status === 201, "статус " + response.status + " (повторный прогон без перезапуска даёт 409)");
+        client.assert(response.body.available === true, "available " + response.body.available);
+        client.assert(response.body.timesBooked === 0, "timesBooked " + response.body.timesBooked);
+    });
+%}
+
+### Статистика загруженности всех отелей (ADMIN)
+GET {{gateway}}/api/hotels/statistics
+Authorization: Bearer {{adminToken}}
+
+> {%
+    client.test("200, сводка без разбивки по номерам", () => {
+        client.assert(response.status === 200, "статус " + response.status);
+        client.assert(response.body.length >= 3, "отелей " + response.body.length);
+        client.assert(response.body.every(hotel => hotel.rooms === undefined), "есть разбивка rooms");
+    });
+%}
+
+### Детальная статистика отеля (ADMIN)
+GET {{gateway}}/api/hotels/1/statistics
+Authorization: Bearer {{adminToken}}
+
+> {%
+    client.test("200, загрузка, простаивающие номера и разбивка по номерам", () => {
+        client.assert(response.status === 200, "статус " + response.status);
+        client.assert(response.body.occupancyRate !== undefined, "нет occupancyRate");
+        client.assert(Array.isArray(response.body.idleRoomIds), "нет idleRoomIds");
+        client.assert(response.body.rooms.length > 0, "нет разбивки rooms");
+    });
+%}
+
+### Статистика недоступна USER - 403
+GET {{gateway}}/api/hotels/statistics
+Authorization: Bearer {{userToken}}
+
+> {%
+    client.test("403", () => {
+        client.assert(response.status === 403, "статус " + response.status);
+    });
+%}
+
+### Пользователи (ADMIN)
+GET {{gateway}}/api/bookings/user
+Authorization: Bearer {{adminToken}}
+
+> {%
+    client.test("200, список без паролей", () => {
+        client.assert(response.status === 200, "статус " + response.status);
+        client.assert(response.body.content.every(user => user.password === undefined), "в ответе есть пароли");
+    });
+%}
+
+### Пользователи недоступны USER - 403
+GET {{gateway}}/api/bookings/user
+Authorization: Bearer {{userToken}}
+
+> {%
+    client.test("403", () => {
+        client.assert(response.status === 403, "статус " + response.status);
+    });
+%}
